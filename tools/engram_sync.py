@@ -104,6 +104,13 @@ def api_ingest(rag_url, cpath):
         return json.loads(r.read().decode())
 
 
+def api_delete(rag_url, cpath):
+    url = rag_url.rstrip("/") + "/api/delete-report?" + urllib.parse.urlencode({"source_path": cpath})
+    req = urllib.request.Request(url, method="DELETE")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.loads(r.read().decode())
+
+
 def _queue_enrich(p):
     try:
         ENRICH_QUEUE.parent.mkdir(parents=True, exist_ok=True)
@@ -190,6 +197,36 @@ def sync_path(cfg, path):
         if not ex.get("tags"):
             _queue_enrich(p)
         log(f"hub {p.name} (chunks={res.get('chunks_added')}, replaced={res.get('replaced_chunks')})")
+        return res
+    return None
+
+
+def delete_path(cfg, path):
+    """Propagate a file deletion into the index: remove its chunks (and, for an origin
+    file, the mirrored hub copy too)."""
+    path = str(Path(path).resolve())
+    hub = cfg["hub"]
+    for src in cfg["sources"]:
+        if path == src["path"] or path.startswith(src["path"] + os.sep):
+            mapped = map_origin_to_hub(cfg, src, path)
+            if not mapped:
+                return None
+            hub_target, _ = mapped
+            try:
+                hub_target.unlink()
+            except FileNotFoundError:
+                pass
+            cpath = "/reports/" + str(hub_target.relative_to(hub))
+            res = api_delete(cfg["rag_url"], cpath)
+            log(f"delete origin {Path(path).name} -> {res.get('deleted_chunks')} chunks + hub copy")
+            return res
+    if path == hub or path.startswith(hub + os.sep):
+        p = Path(path)
+        if p.suffix.lower() not in TEXT_EXT or p.name.lower() in RESERVED:
+            return None
+        cpath = "/reports/" + str(p.relative_to(hub))
+        res = api_delete(cfg["rag_url"], cpath)
+        log(f"delete hub {p.name} -> {res.get('deleted_chunks')} chunks")
         return res
     return None
 
@@ -283,13 +320,18 @@ def watch(cfg):
         scan(cfg)
     except Exception as ex:
         log(f"startup scan error: {ex}")
-    pending, lock = {}, threading.Lock()
+    pending, pending_del, lock = {}, {}, threading.Lock()
 
     class H(FileSystemEventHandler):
         def _on(self, path):
             if Path(path).suffix.lower() in TEXT_EXT:
                 with lock:
                     pending[str(Path(path).resolve())] = time.time()
+
+        def _del(self, path):
+            if Path(path).suffix.lower() in TEXT_EXT:
+                with lock:
+                    pending_del[str(Path(path).resolve())] = time.time()
 
         def on_created(self, e):
             if not e.is_directory:
@@ -299,9 +341,14 @@ def watch(cfg):
             if not e.is_directory:
                 self._on(e.src_path)
 
+        def on_deleted(self, e):
+            if not e.is_directory:
+                self._del(e.src_path)
+
         def on_moved(self, e):
             if not e.is_directory:
-                self._on(e.dest_path)
+                self._del(e.src_path)      # old path gone
+                self._on(e.dest_path)      # new path appeared
 
     obs = Observer()
     roots = [cfg["hub"]] + [s["path"] for s in cfg["sources"] if os.path.isdir(s["path"])]
@@ -312,17 +359,28 @@ def watch(cfg):
     try:
         while True:
             time.sleep(1.0)
-            now, due = time.time(), []
+            now, due, due_del = time.time(), [], []
             with lock:
                 for p, t in list(pending.items()):
                     if now - t >= 1.5:  # debounce
                         due.append(p)
                         del pending[p]
+                for p, t in list(pending_del.items()):
+                    if now - t >= 1.5:
+                        due_del.append(p)
+                        del pending_del[p]
             for p in due:
                 try:
                     sync_path(cfg, p)
                 except Exception as ex:
                     log(f"ERROR sync {p}: {ex}")
+            for p in due_del:
+                if os.path.exists(p):  # reappeared (atomic save / rename-in) -> not a real delete
+                    continue
+                try:
+                    delete_path(cfg, p)
+                except Exception as ex:
+                    log(f"ERROR delete {p}: {ex}")
     except KeyboardInterrupt:
         obs.stop()
     obs.join()
