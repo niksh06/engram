@@ -1,3 +1,10 @@
+# Local-only docs/handoffs/runtime data — kept OFF the remote (minimal md on GitHub).
+# Canonical copies live locally; see auto-memory `engram-reports-hub`.
+docs/
+Reports/
+uploads/
+data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

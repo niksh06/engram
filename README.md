@@ -1,8 +1,10 @@
-# Python RAG Server with DuckDB
+# Engram — Reports Knowledge Hub (RAG + RLM)
 
-This project is a Python-based server designed for document processing and retrieval-augmented generation (RAG). It provides a simple web interface and a JSON API to upload documents, process them into chunks, generate embeddings, and store them in a DuckDB database for efficient similarity search.
+> Formerly `RAG-DuckDB-with-MCP`. **Engram** is a local, sovereign hub that centralizes project reports outside their repos and makes them hybrid-searchable (RAG), with a recursive-reasoning (RLM) layer planned on top.
 
-The entire application is containerized with Docker and uses `uv` for fast, optimized dependency management. It also includes an `mcp-rag-service` for integration with MCP (Machine Comprehension Platform).
+Engram is a Python server for document processing and retrieval-augmented generation (RAG). It provides a web interface and a JSON API to upload documents, chunk them, generate embeddings, and store them in DuckDB (VSS + FTS) for hybrid similarity search.
+
+The application is containerized with Docker and uses `uv` for fast, optimized dependency management. It also includes an `mcp-rag-service` for integration with MCP (Model Context Protocol).
 
 ## Features
 
