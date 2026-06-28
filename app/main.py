@@ -358,6 +358,17 @@ async def api_ingest_report(
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.delete("/api/delete-report")
+async def api_delete_report(source_path: str):
+    """Delete all chunks for a report by its source_path (the path used at ingest)."""
+    try:
+        deleted = services.delete_report(source_path)
+        return {"status": "success", "source_path": source_path, "deleted_chunks": deleted}
+    except Exception as e:
+        logger.error(f"delete-report failed for {source_path}: {e}", exc_info=True)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.post("/api/upload")
 async def api_upload(file: UploadFile = File(...)):
     """

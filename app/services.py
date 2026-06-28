@@ -714,7 +714,16 @@ def ingest_report(path: str, project: str = None, report_type: str = None,
         "resource": resource,
         "source_path": abspath,
     }
-    meta = {k: v for k, v in meta.items() if v is not None}
+
+    # YAML auto-parses unquoted dates/timestamps to date/datetime objects, which are not
+    # JSON-serializable — coerce them (and any in lists) to ISO strings so metadata stores cleanly.
+    def _jsonable(v):
+        if isinstance(v, (datetime.date, datetime.datetime)):
+            return v.isoformat()
+        if isinstance(v, list):
+            return [_jsonable(x) for x in v]
+        return v
+    meta = {k: _jsonable(v) for k, v in meta.items() if v is not None}
 
     # For text reports, embed the frontmatter-stripped body and prepend title+description
     # so the leading chunk is retrievable by its own summary.
@@ -742,6 +751,23 @@ def ingest_report(path: str, project: str = None, report_type: str = None,
                                  extra_metadata=meta, text_override=text_override)
     return {"source_path": abspath, "chunks_added": len(chunks),
             "replaced_chunks": replaced, "metadata": meta}
+
+
+def delete_report(source_path: str) -> int:
+    """Delete all chunks for a given source_path (the path used at ingest, e.g.
+    /reports/...). Returns the number of chunks removed. Used by the sync watcher to
+    propagate file deletions into the index."""
+    if db_connection is None:
+        initialize_services()
+    n = db_connection.execute(
+        "SELECT count(*) FROM chunks WHERE json_extract_string(metadata, '$.source_path') = ?",
+        (source_path,)).fetchone()[0]
+    if n:
+        db_connection.execute(
+            "DELETE FROM chunks WHERE json_extract_string(metadata, '$.source_path') = ?",
+            (source_path,))
+    logger.info(f"delete_report: removed {n} chunks for {source_path}")
+    return n
 
 # --- Main Processing Logic ---
 def process_and_embed_files(use_tfidf_keywords: bool = True, top_n_keywords: int = 5) -> List[Dict[str, Any]]:
