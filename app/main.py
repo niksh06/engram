@@ -283,34 +283,47 @@ async def search(
 # Добавляем JSON API endpoint для MCP интеграции
 @app.post("/api/search")
 async def api_search(
-    query: str, 
-    top_k: int = Query(5, ge=1, le=50), 
+    query: str,
+    top_k: int = Query(5, ge=1, le=50),
     search_type: str = Query("hybrid", enum=["hybrid", "semantic", "keyword"]),
     use_reranker: bool = Query(True),
-    expand_query: bool = Query(False)
+    expand_query: bool = Query(False),
+    project: Optional[str] = Query(None),
+    report_type: Optional[str] = Query(None),
+    type: Optional[str] = Query(None),
+    tags: Optional[str] = Query(None, description="Comma-separated; any-of match"),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None)
 ):
     """
     JSON API для продвинутого поиска (для MCP интеграции)
     """
     if not query or not query.strip():
         return {"error": "Query cannot be empty", "results": []}
-    
+
     try:
-        # Выполняем поиск через обновленную функцию
+        # Build metadata filters (OKF: type / project / report_type / tags / date range)
+        filters = {k: v for k, v in {
+            "project": project, "report_type": report_type, "type": type, "tags": tags,
+            "date_from": date_from, "date_to": date_to,
+        }.items() if v}
+
         search_results = services.search_chunks(
-            query=query, 
+            query=query,
             top_k=top_k,
             search_type=search_type,
             use_reranker=use_reranker,
-            expand_query=expand_query
+            expand_query=expand_query,
+            filters=filters or None
         )
-        
+
         return {
             "query": query,
             "search_params": {
                 "search_type": search_type,
                 "use_reranker": use_reranker,
                 "expand_query": expand_query,
+                "filters": filters,
             },
             "total_results": len(search_results),
             "results": search_results
@@ -318,6 +331,32 @@ async def api_search(
         
     except Exception as e:
         return {"error": str(e), "results": []}
+
+@app.post("/api/ingest-report")
+async def api_ingest_report(
+    path: str,
+    project: Optional[str] = Query(None, description="Optional; inferred from path .../projects/<project>/..."),
+    report_type: Optional[str] = Query(None),
+    report_date: Optional[str] = Query(None),
+    title: Optional[str] = Query(None),
+    description: Optional[str] = Query(None),
+    tags: Optional[str] = Query(None, description="Comma-separated OKF tags"),
+    type: Optional[str] = Query(None, description="OKF type (default 'Report')"),
+):
+    """Ingest one report file (by a server-accessible path) as an OKF concept document."""
+    try:
+        _tags = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
+        result = services.ingest_report(path, project=project, report_type=report_type,
+                                        report_date=report_date, title=title,
+                                        description=description, tags=_tags, doc_type=type)
+        return {"status": "success", **result}
+    except FileNotFoundError:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=404, content={"error": f"File not found: {path}"})
+    except Exception as e:
+        logger.error(f"ingest-report failed for {path}: {e}", exc_info=True)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/api/upload")
 async def api_upload(file: UploadFile = File(...)):

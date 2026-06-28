@@ -3,7 +3,10 @@ import duckdb
 from sentence_transformers import SentenceTransformer
 from pypdf import PdfReader
 from sklearn.feature_extraction.text import TfidfVectorizer
-from langchain.text_splitter import RecursiveCharacterTextSplitter, Language as LCLanguage
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter, Language as LCLanguage
+except ImportError:  # older langchain layout
+    from langchain.text_splitter import RecursiveCharacterTextSplitter, Language as LCLanguage
 try:
     from llama_index.core.node_parser import CodeSplitter
     CODESPLITTER_AVAILABLE = True
@@ -20,6 +23,12 @@ import numpy as np, json
 from typing import List, Dict, Any
 from sentence_transformers import CrossEncoder
 from pathlib import Path
+try:
+    import yaml  # for OKF YAML frontmatter parsing
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
+    yaml = None
 try:
     from tree_sitter import Parser, Language
     from tree_sitter_language_pack import get_language
@@ -135,7 +144,7 @@ def initialize_services():
         try:
             db_connection.execute("ALTER TABLE chunks ADD COLUMN metadata JSON;")
             logger.info("Added 'metadata' column to 'chunks' table.")
-        except duckdb.duckdb.CatalogException:
+        except (getattr(duckdb, "CatalogException", Exception),):
             # Column already exists, which is fine
             pass
         logger.info(f"DuckDB initialized and table 'chunks' is ready with embedding dimension {embedding_dim}.")
@@ -363,8 +372,9 @@ def get_total_chunks_count() -> int:
         logger.error(f"Could not get chunk count: {e}")
         return 0
 
-def search_chunks(query: str, top_k: int = 5, search_type: str = 'hybrid', 
-                  expand_query: bool = False, use_reranker: bool = True) -> List[Dict[str, Any]]:
+def search_chunks(query: str, top_k: int = 5, search_type: str = 'hybrid',
+                  expand_query: bool = False, use_reranker: bool = True,
+                  filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
     """
     Performs search with multiple strategies: semantic, keyword (BM25), or hybrid.
     Includes optional query expansion and reranking.
@@ -375,13 +385,35 @@ def search_chunks(query: str, top_k: int = 5, search_type: str = 'hybrid',
     if not query or not query.strip():
         return []
 
-    logger.info(f"Performing {search_type} search for query: '{query}' with top_k={top_k}, expand_query={expand_query}, use_reranker={use_reranker}")
+    # Build optional metadata filter (OKF: type / project / report_type / tags / report_date range).
+    _fclauses, filter_params = [], []
+    for _key, _jpath in (("project", "$.project"), ("report_type", "$.report_type"), ("type", "$.type")):
+        if filters and filters.get(_key):
+            _fclauses.append(f"json_extract_string(metadata, '{_jpath}') = ?"); filter_params.append(filters[_key])
+    if filters and filters.get("date_from"):
+        _fclauses.append("json_extract_string(metadata, '$.report_date') >= ?"); filter_params.append(filters["date_from"])
+    if filters and filters.get("date_to"):
+        _fclauses.append("json_extract_string(metadata, '$.report_date') <= ?"); filter_params.append(filters["date_to"])
+    if filters and filters.get("tags"):
+        _tags = filters["tags"]
+        if isinstance(_tags, str):
+            _tags = [t.strip() for t in _tags.split(",") if t.strip()]
+        _tag_or = []
+        for _t in _tags:
+            # OKF tags are stored as a JSON array; match membership via json_contains.
+            _tag_or.append("json_contains(json_extract(metadata, '$.tags'), ?)")
+            filter_params.append(json.dumps(_t))
+        if _tag_or:
+            _fclauses.append("(" + " OR ".join(_tag_or) + ")")
+    filter_sql = " AND ".join(_fclauses)
+
+    logger.info(f"Performing {search_type} search for query: '{query}' with top_k={top_k}, expand_query={expand_query}, use_reranker={use_reranker}, filters={filters}")
 
     # 1. Query Expansion (optional)
     if expand_query:
         try:
             logger.info("Performing query expansion...")
-            initial_results = search_chunks(query, top_k=2, search_type='semantic', expand_query=False, use_reranker=False)
+            initial_results = search_chunks(query, top_k=2, search_type='semantic', expand_query=False, use_reranker=False, filters=filters)
             
             expanded_keywords = set()
             for res in initial_results:
@@ -408,9 +440,10 @@ def search_chunks(query: str, top_k: int = 5, search_type: str = 'hybrid',
         try:
             query_embedding = model.encode(query).astype('float32').tolist()
             embedding_dim = len(query_embedding)
+            _where = f"WHERE {filter_sql}" if filter_sql else ""
             res = db_connection.execute(
-                f"SELECT id, array_cosine_similarity(embedding, ?::FLOAT[{embedding_dim}]) AS score FROM chunks ORDER BY score DESC LIMIT ?",
-                (query_embedding, fetch_k)
+                f"SELECT id, array_cosine_similarity(embedding, ?::FLOAT[{embedding_dim}]) AS score FROM chunks {_where} ORDER BY score DESC LIMIT ?",
+                (query_embedding, *filter_params, fetch_k)
             ).fetchall()
             semantic_results = [{"id": row[0], "score": row[1]} for row in res]
         except Exception as e:
@@ -418,9 +451,10 @@ def search_chunks(query: str, top_k: int = 5, search_type: str = 'hybrid',
 
     if search_type in ['keyword', 'hybrid']:
         try:
+            _and = f"AND {filter_sql}" if filter_sql else ""
             res = db_connection.execute(
-                "SELECT id, fts_main_chunks.match_bm25(id, ?) AS score FROM chunks WHERE score IS NOT NULL ORDER BY score DESC LIMIT ?",
-                (query, fetch_k)
+                f"SELECT id, fts_main_chunks.match_bm25(id, ?) AS score FROM chunks WHERE score IS NOT NULL {_and} ORDER BY score DESC LIMIT ?",
+                (query, *filter_params, fetch_k)
             ).fetchall()
             keyword_results = [{"id": row[0], "score": row[1]} for row in res]
         except Exception as e:
@@ -488,10 +522,13 @@ def search_chunks(query: str, top_k: int = 5, search_type: str = 'hybrid',
 
     return final_results
 
-def process_single_file(filepath: str, use_tfidf_keywords: bool = False) -> List[Dict[str, Any]]:
+def process_single_file(filepath: str, use_tfidf_keywords: bool = False, extra_metadata: Dict[str, Any] = None,
+                        text_override: str = None) -> List[Dict[str, Any]]:
     """
     Processes a single file from its path, generates embeddings, and stores it in DuckDB.
-    This is an atomic version for single uploads.
+    This is an atomic version for single uploads. If text_override is given, it is used
+    as the document body instead of re-reading the file (used to feed frontmatter-stripped
+    report bodies); filepath is still used for naming and chunk-language detection.
     """
     if model is None or db_connection is None:
         initialize_services()
@@ -500,7 +537,7 @@ def process_single_file(filepath: str, use_tfidf_keywords: bool = False) -> List
     logger.info(f"Processing single file: {file_name}")
 
     try:
-        text = extract_text_from_file(filepath)
+        text = text_override if text_override is not None else extract_text_from_file(filepath)
         if not text or not text.strip():
             logger.warning(f"No text extracted from {file_name} or file is empty. Skipping.")
             return []
@@ -509,6 +546,11 @@ def process_single_file(filepath: str, use_tfidf_keywords: bool = False) -> List
         if not chunks_with_meta:
             logger.warning(f"No chunks created for {file_name}. Skipping.")
             return []
+
+        # Merge caller-supplied metadata (e.g. report {project, report_type, ...}) into every chunk.
+        if extra_metadata:
+            for _c in chunks_with_meta:
+                _c['metadata'].update(extra_metadata)
 
         # Note: TF-IDF is corpus-based. For a single file, this is just term frequency.
         # It's disabled by default for this function.
@@ -549,6 +591,140 @@ def process_single_file(filepath: str, use_tfidf_keywords: bool = False) -> List
     except Exception as e:
         logger.error(f"Failed to process single file {filepath}: {e}", exc_info=True)
         raise
+
+# --- Report ingestion (Engram reports hub, OKF-aligned) ---
+# Recommended report_type vocabulary (free-form; any folder name is accepted).
+REPORT_TYPES = {"daily", "weekly", "analysis", "planning", "implementation",
+                "premortem", "reference", "archive"}
+# OKF reserved filenames — navigation/history, not concept documents (skip on ingest).
+RESERVED_FILES = {"index.md", "log.md"}
+TEXT_EXTS = {".md", ".markdown", ".txt", ".mdx"}
+
+
+def _parse_frontmatter(raw: str):
+    """Parse a leading OKF/YAML frontmatter block. Returns (meta: dict, body: str)."""
+    if not YAML_AVAILABLE or not raw.startswith("---"):
+        return {}, raw
+    import re
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", raw, re.DOTALL)
+    if not m:
+        return {}, raw
+    try:
+        meta = yaml.safe_load(m.group(1)) or {}
+    except Exception:
+        return {}, raw
+    if not isinstance(meta, dict):
+        return {}, raw
+    return meta, m.group(2)
+
+
+def _derive_project_type(abspath: str):
+    """Derive (project, report_type) from the path convention
+    .../<project>/<report_type>/file or .../projects/<project>/<report_type>/file.
+    report_type is the directory directly under the project dir (None if file sits there)."""
+    parts = list(Path(abspath).parts)
+    lower = [p.lower() for p in parts]
+    project = rtype = None
+    anchor = None
+    for key in ("projects", "global"):
+        if key in lower:
+            anchor = lower.index(key)
+            break
+    if anchor is not None:
+        if key == "global":
+            project = "global"
+            base = anchor  # report_type is the dir after 'global'
+        else:
+            if anchor + 1 <= len(parts) - 1:
+                project = parts[anchor + 1]
+            base = anchor + 1  # report_type is the dir after the project dir
+        # report_type = next segment, only if it's a directory (not the filename itself)
+        if base + 1 <= len(parts) - 2:
+            rtype = parts[base + 1]
+    return project, rtype
+
+
+def ingest_report(path: str, project: str = None, report_type: str = None,
+                  report_date: str = None, title: str = None,
+                  description: str = None, tags=None, doc_type: str = None) -> Dict[str, Any]:
+    """
+    Ingest a single report as an OKF concept document. Metadata precedence:
+      explicit arg > YAML frontmatter > path convention > filename/mtime fallback.
+    Stored keys: type (OKF, default 'Report'), title, description, resource, tags[],
+    timestamp; plus Engram report profile: project, report_type, report_date, source_path.
+    """
+    import datetime, re
+    abspath = os.path.abspath(path)
+    if not os.path.isfile(abspath):
+        raise FileNotFoundError(abspath)
+    if os.path.basename(abspath).lower() in RESERVED_FILES:
+        return {"source_path": abspath, "chunks_added": 0, "skipped": "reserved-file", "metadata": {}}
+
+    # Read raw text + split OKF frontmatter (text formats only; binaries extracted later).
+    ext = Path(abspath).suffix.lower()
+    fm, body, text_override = {}, None, None
+    if ext in TEXT_EXTS:
+        try:
+            raw = open(abspath, encoding="utf-8", errors="replace").read()
+        except Exception:
+            raw = ""
+        fm, body = _parse_frontmatter(raw)
+
+    path_project, path_rtype = _derive_project_type(abspath)
+
+    project = project or fm.get("project") or path_project
+    if not project:
+        raise ValueError(
+            "project not provided and not derivable from path "
+            "(expected .../projects/<project>/... or .../global/...)")
+    report_type = report_type or fm.get("report_type") or path_rtype
+    doc_type = doc_type or fm.get("type") or "Report"
+    title = title or fm.get("title") or os.path.splitext(os.path.basename(abspath))[0]
+    description = description or fm.get("description")
+    tags = tags if tags is not None else fm.get("tags")
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+    if not isinstance(tags, list):
+        tags = []
+    resource = fm.get("resource") or f"file://{abspath}"
+    timestamp = fm.get("timestamp") or datetime.datetime.fromtimestamp(
+        os.path.getmtime(abspath)).isoformat(timespec="seconds")
+
+    if not report_date:
+        report_date = fm.get("report_date")
+    if not report_date:
+        base = os.path.basename(abspath)
+        m = re.search(r"(\d{4}-\d{2}-\d{2})", base)
+        if m:
+            report_date = m.group(1)
+        else:
+            m8 = re.search(r"(\d{4})(\d{2})(\d{2})", base)  # e.g. 20251008
+            report_date = (f"{m8.group(1)}-{m8.group(2)}-{m8.group(3)}" if m8
+                           else datetime.date.fromtimestamp(os.path.getmtime(abspath)).isoformat())
+
+    meta = {
+        "type": doc_type,
+        "project": project,
+        "report_type": report_type,
+        "report_date": report_date,
+        "title": title,
+        "description": description,
+        "tags": tags,
+        "timestamp": timestamp,
+        "resource": resource,
+        "source_path": abspath,
+    }
+    meta = {k: v for k, v in meta.items() if v is not None}
+
+    # For text reports, embed the frontmatter-stripped body and prepend title+description
+    # so the leading chunk is retrievable by its own summary.
+    if body is not None:
+        head = f"# {title}\n" + (f"{description}\n\n" if description else "\n")
+        text_override = head + body
+
+    chunks = process_single_file(abspath, use_tfidf_keywords=False,
+                                 extra_metadata=meta, text_override=text_override)
+    return {"source_path": abspath, "chunks_added": len(chunks), "metadata": meta}
 
 # --- Main Processing Logic ---
 def process_and_embed_files(use_tfidf_keywords: bool = True, top_n_keywords: int = 5) -> List[Dict[str, Any]]:
