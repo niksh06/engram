@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.engram.sync</string>
+
+    <!-- Watchdog daemon: copies changed origin reports into the hub and (upsert-)ingests
+         them into Engram. launchd keeps it alive across crashes and logins. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/nsh/Downloads/engram/tools/.venv/bin/python</string>
+        <string>/Users/nsh/Downloads/engram/tools/engram_sync.py</string>
+        <string>watch</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/nsh/Downloads/engram/tools</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/nsh/.engram/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/nsh/.engram/launchd.err.log</string>
+</dict>
+</plist>
