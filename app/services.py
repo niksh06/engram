@@ -722,9 +722,26 @@ def ingest_report(path: str, project: str = None, report_type: str = None,
         head = f"# {title}\n" + (f"{description}\n\n" if description else "\n")
         text_override = head + body
 
+    # Upsert: drop any existing chunks for this source_path so re-ingest is idempotent
+    # (a sync re-ingesting a changed file won't duplicate chunks). No-op on first ingest.
+    replaced = 0
+    if db_connection is None:
+        initialize_services()
+    try:
+        replaced = db_connection.execute(
+            "SELECT count(*) FROM chunks WHERE json_extract_string(metadata, '$.source_path') = ?",
+            (abspath,)).fetchone()[0]
+        if replaced:
+            db_connection.execute(
+                "DELETE FROM chunks WHERE json_extract_string(metadata, '$.source_path') = ?",
+                (abspath,))
+    except Exception as e:
+        logger.warning(f"Upsert delete failed for {abspath}: {e}")
+
     chunks = process_single_file(abspath, use_tfidf_keywords=False,
                                  extra_metadata=meta, text_override=text_override)
-    return {"source_path": abspath, "chunks_added": len(chunks), "metadata": meta}
+    return {"source_path": abspath, "chunks_added": len(chunks),
+            "replaced_chunks": replaced, "metadata": meta}
 
 # --- Main Processing Logic ---
 def process_and_embed_files(use_tfidf_keywords: bool = True, top_n_keywords: int = 5) -> List[Dict[str, Any]]:
