@@ -1,0 +1,26 @@
+# Engram — local reports knowledge hub (RAG + RLM).
+# Single app container: FastAPI + embedded DuckDB (single writer = ADR B1).
+# Models come from the host HuggingFace cache (option B), shared with Aleph, offline.
+services:
+  engram:
+    build:
+      context: .
+      args:
+        USE_CPU_ONLY: "true"
+    image: engram:latest
+    container_name: engram
+    ports:
+      - "127.0.0.1:8089:8000"        # loopback only (sovereign)
+    environment:
+      HF_HOME: /hf-cache
+      HF_HUB_OFFLINE: "1"            # models served from the mounted cache, no egress
+      CHUNK_SIZE: "700"
+      CHUNK_OVERLAP: "100"
+    volumes:
+      - ${HOME}/.cache/huggingface:/hf-cache      # shared model store (mpnet/reranker), option B
+      - engram_data:/app/data                      # .duckdb persistence
+      - ${HOME}/Reports:/reports:ro                # canonical reports = source of truth (A1), read-only
+    restart: unless-stopped
+
+volumes:
+  engram_data:
