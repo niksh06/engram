@@ -173,6 +173,21 @@ class RAGClient:
             logger.info(f"Ingested report {path} (project={project})")
             return result
 
+    async def delete_report(
+        self,
+        source_path: str,
+        rag_server_url: str = "http://host.docker.internal:8000",
+    ) -> Dict[str, Any]:
+        """Delete all chunks for a report by its source_path via /api/delete-report."""
+        session = await self._get_session()
+        url = f"{rag_server_url.rstrip('/')}/api/delete-report"
+        async with session.delete(url, params={"source_path": source_path}) as response:
+            result = await response.json()
+            if response.status != 200:
+                raise Exception(f"delete-report failed: HTTP {response.status}, {result}")
+            logger.info(f"Deleted report {source_path} ({result.get('deleted_chunks')} chunks)")
+            return result
+
     async def close(self):
         """Закрыть HTTP сессию"""
         if self.session:

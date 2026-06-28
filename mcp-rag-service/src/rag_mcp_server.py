@@ -238,6 +238,18 @@ class RAGMCPServer:
                     }
                 ),
                 Tool(
+                    name="delete_report",
+                    description="Delete all chunks for a report from Engram by its source_path (the container path used at ingest, e.g. /reports/projects/aleph/analysis/x.md).",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source_path": {"type": "string", "description": "Ingest source_path of the report (e.g. /reports/projects/<project>/<type>/<file>.md)"},
+                            "rag_server_url": {"type": "string", "default": "http://host.docker.internal:8000"}
+                        },
+                        "required": ["source_path"]
+                    }
+                ),
+                Tool(
                     name="search_reports",
                     description="Search Engram reports with OKF metadata filters (project / report_type / type / tags / date range). Hybrid vector+keyword with reranking.",
                     inputSchema={
@@ -299,6 +311,8 @@ class RAGMCPServer:
                     return await self._handle_get_collection_stats(arguments)
                 elif name == "ingest_report":
                     return await self._handle_ingest_report(arguments)
+                elif name == "delete_report":
+                    return await self._handle_delete_report(arguments)
                 elif name == "search_reports":
                     return await self._handle_search_reports(arguments)
                 elif name == "rag_query_direct":
@@ -509,6 +523,13 @@ class RAGMCPServer:
             tags=args.get("tags"), doc_type=args.get("type"),
             rag_server_url=rag_server_url,
         )
+        return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+    async def _handle_delete_report(self, args: Dict[str, Any]) -> List[TextContent]:
+        """Delete a report's chunks by source_path."""
+        rag_server_url = args.get("rag_server_url") or DEFAULT_RAG_URL
+        result = await self.rag_client.delete_report(
+            source_path=args["source_path"], rag_server_url=rag_server_url)
         return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
 
     async def _handle_search_reports(self, args: Dict[str, Any]) -> List[TextContent]:
