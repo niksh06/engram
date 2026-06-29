@@ -369,6 +369,73 @@ async def api_delete_report(source_path: str):
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
+@app.get("/api/reports")
+async def api_reports():
+    """List all reports with their OKF metadata (drives the browser)."""
+    try:
+        return {"reports": services.list_reports()}
+    except Exception as e:
+        return {"error": str(e), "reports": []}
+
+
+@app.get("/reports", response_class=HTMLResponse)
+async def reports_browser(
+    request: Request,
+    project: Optional[str] = Query(None),
+    report_type: Optional[str] = Query(None),
+    tag: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+):
+    """Browse all reports, grouped by project -> report_type, with simple facet filters."""
+    reports = services.list_reports()
+    projects = sorted({r["project"] for r in reports if r["project"]})
+    types = sorted({r["report_type"] for r in reports if r["report_type"]})
+    all_tags = sorted({t for r in reports for t in (r["tags"] or [])})
+    if project:
+        reports = [r for r in reports if r["project"] == project]
+    if report_type:
+        reports = [r for r in reports if r["report_type"] == report_type]
+    if tag:
+        reports = [r for r in reports if tag in (r["tags"] or [])]
+    if q:
+        ql = q.lower()
+        reports = [r for r in reports
+                   if ql in (r.get("title") or "").lower()
+                   or ql in (r.get("description") or "").lower()]
+    grouped = {}
+    for r in reports:
+        grouped.setdefault(r["project"] or "—", {}).setdefault(r["report_type"] or "—", []).append(r)
+    return templates.TemplateResponse(request, "reports.html", {
+        "grouped": grouped, "total": len(reports),
+        "projects": projects, "types": types, "all_tags": all_tags,
+        "f": {"project": project or "", "report_type": report_type or "", "tag": tag or "", "q": q or ""},
+    })
+
+
+@app.get("/reports/view", response_class=HTMLResponse)
+async def report_view(request: Request, source_path: str):
+    """Render one report's markdown body (read from the mounted /reports volume, read-only)."""
+    import os, re
+    real = os.path.realpath(source_path)
+    if not (real == "/reports" or real.startswith("/reports/")) or not os.path.isfile(real):
+        return HTMLResponse("Report not found", status_code=404)
+    raw = open(real, encoding="utf-8", errors="replace").read()
+    body = raw
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", raw, re.DOTALL)
+    meta_yaml = m.group(1) if m else ""
+    if m:
+        body = m.group(2)
+    try:
+        import markdown as _md
+        content_html = _md.markdown(body, extensions=["fenced_code", "tables", "sane_lists", "nl2br"])
+    except Exception:
+        content_html = "<pre>" + body.replace("<", "&lt;") + "</pre>"
+    return templates.TemplateResponse(request, "report_view.html", {
+        "content_html": content_html, "meta_yaml": meta_yaml,
+        "source_path": source_path, "name": os.path.basename(real),
+    })
+
 @app.post("/api/upload")
 async def api_upload(file: UploadFile = File(...)):
     """

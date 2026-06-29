@@ -769,6 +769,39 @@ def delete_report(source_path: str) -> int:
     logger.info(f"delete_report: removed {n} chunks for {source_path}")
     return n
 
+
+def list_reports() -> List[Dict[str, Any]]:
+    """List distinct reports (grouped by source_path) with their OKF metadata + chunk count.
+    Drives the reports-browser web UI."""
+    if db_connection is None:
+        initialize_services()
+    rows = db_connection.execute("""
+        SELECT json_extract_string(metadata, '$.source_path') AS source_path,
+               any_value(file_name) AS file_name,
+               any_value(json_extract_string(metadata, '$.project')) AS project,
+               any_value(json_extract_string(metadata, '$.report_type')) AS report_type,
+               any_value(json_extract_string(metadata, '$.report_date')) AS report_date,
+               any_value(json_extract_string(metadata, '$.title')) AS title,
+               any_value(json_extract_string(metadata, '$.description')) AS description,
+               any_value(json_extract(metadata, '$.tags')) AS tags,
+               count(*) AS chunks
+        FROM chunks
+        WHERE json_extract_string(metadata, '$.source_path') IS NOT NULL
+        GROUP BY source_path
+        ORDER BY project NULLS LAST, report_type NULLS LAST, report_date DESC NULLS LAST
+    """).fetchall()
+    cols = ["source_path", "file_name", "project", "report_type", "report_date",
+            "title", "description", "tags", "chunks"]
+    out = []
+    for r in rows:
+        d = dict(zip(cols, r))
+        try:
+            d["tags"] = json.loads(d["tags"]) if d["tags"] else []
+        except Exception:
+            d["tags"] = []
+        out.append(d)
+    return out
+
 # --- Main Processing Logic ---
 def process_and_embed_files(use_tfidf_keywords: bool = True, top_n_keywords: int = 5) -> List[Dict[str, Any]]:
     """
