@@ -27,6 +27,12 @@ from .utils import validate_file_path, safe_sql_query
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Default RAG server URL. A host-side MCP process must reach the Engram container
+# on the published loopback port (see docker-compose.yml: 127.0.0.1:8089). Override
+# via the RAG_SERVER_URL env var in the MCP registration; in-container callers can
+# still pass rag_server_url=http://host.docker.internal:8000 per tool call.
+DEFAULT_RAG_URL = os.environ.get("RAG_SERVER_URL", "http://host.docker.internal:8000")
+
 class RAGMCPServer:
     """MCP Server для RAG операций"""
     
@@ -213,6 +219,57 @@ class RAGMCPServer:
                     }
                 ),
                 Tool(
+                    name="ingest_report",
+                    description="Ingest a report file (by server-accessible path, e.g. /reports/...) into Engram as an OKF concept document. Metadata is read from YAML frontmatter if present, else inferred from the path (.../projects/<project>/<report_type>/) and filename.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Path to the report file (inside the container, e.g. /reports/projects/tparser/analysis/2026-06-06_eval.md)"},
+                            "project": {"type": "string", "description": "Project (optional; inferred from path .../projects/<project>/ or frontmatter)"},
+                            "report_type": {"type": "string", "description": "analysis|planning|implementation|premortem|reference|daily|weekly|archive (optional; inferred from path/frontmatter)"},
+                            "report_date": {"type": "string", "description": "ISO date YYYY-MM-DD (optional; inferred from filename/mtime/frontmatter)"},
+                            "title": {"type": "string", "description": "Optional title (else frontmatter/filename)"},
+                            "description": {"type": "string", "description": "Optional one-line description (OKF)"},
+                            "tags": {"type": "string", "description": "Optional comma-separated OKF tags"},
+                            "type": {"type": "string", "description": "OKF type (optional; default 'Report')"},
+                            "rag_server_url": {"type": "string", "default": "http://host.docker.internal:8000"}
+                        },
+                        "required": ["path"]
+                    }
+                ),
+                Tool(
+                    name="delete_report",
+                    description="Delete all chunks for a report from Engram by its source_path (the container path used at ingest, e.g. /reports/projects/aleph/analysis/x.md).",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "source_path": {"type": "string", "description": "Ingest source_path of the report (e.g. /reports/projects/<project>/<type>/<file>.md)"},
+                            "rag_server_url": {"type": "string", "default": "http://host.docker.internal:8000"}
+                        },
+                        "required": ["source_path"]
+                    }
+                ),
+                Tool(
+                    name="search_reports",
+                    description="Search Engram reports with OKF metadata filters (project / report_type / type / tags / date range). Hybrid vector+keyword with reranking.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Search query"},
+                            "top_k": {"type": "integer", "default": 5, "minimum": 1},
+                            "project": {"type": "string", "description": "Filter by project (optional)"},
+                            "report_type": {"type": "string", "description": "Filter by report type (optional)"},
+                            "type": {"type": "string", "description": "Filter by OKF type, e.g. Report (optional)"},
+                            "tags": {"type": "string", "description": "Comma-separated tags; any-of match (optional)"},
+                            "date_from": {"type": "string", "description": "Earliest report_date, ISO (optional)"},
+                            "date_to": {"type": "string", "description": "Latest report_date, ISO (optional)"},
+                            "use_reranker": {"type": "boolean", "default": True},
+                            "rag_server_url": {"type": "string", "default": "http://host.docker.internal:8000"}
+                        },
+                        "required": ["query"]
+                    }
+                ),
+                Tool(
                     name="rag_query_direct",
                     description="Прямой SQL запрос к DuckDB VSS (для экспертов)",
                     inputSchema={
@@ -252,6 +309,12 @@ class RAGMCPServer:
                     return await self._handle_analyze_collection(arguments)
                 elif name == "rag_get_collection_stats":
                     return await self._handle_get_collection_stats(arguments)
+                elif name == "ingest_report":
+                    return await self._handle_ingest_report(arguments)
+                elif name == "delete_report":
+                    return await self._handle_delete_report(arguments)
+                elif name == "search_reports":
+                    return await self._handle_search_reports(arguments)
                 elif name == "rag_query_direct":
                     return await self._handle_query_direct(arguments)
                 else:
@@ -449,6 +512,40 @@ class RAGMCPServer:
             type="text",
             text=json.dumps(results, indent=2, ensure_ascii=False)
         )]
+
+    async def _handle_ingest_report(self, args: Dict[str, Any]) -> List[TextContent]:
+        """Ingest a report with metadata."""
+        rag_server_url = args.get("rag_server_url") or DEFAULT_RAG_URL
+        result = await self.rag_client.ingest_report(
+            path=args["path"], project=args.get("project"),
+            report_type=args.get("report_type"), report_date=args.get("report_date"),
+            title=args.get("title"), description=args.get("description"),
+            tags=args.get("tags"), doc_type=args.get("type"),
+            rag_server_url=rag_server_url,
+        )
+        return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+    async def _handle_delete_report(self, args: Dict[str, Any]) -> List[TextContent]:
+        """Delete a report's chunks by source_path."""
+        rag_server_url = args.get("rag_server_url") or DEFAULT_RAG_URL
+        result = await self.rag_client.delete_report(
+            source_path=args["source_path"], rag_server_url=rag_server_url)
+        return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
+
+    async def _handle_search_reports(self, args: Dict[str, Any]) -> List[TextContent]:
+        """Search reports with metadata filters."""
+        query = args.get("query")
+        if not query or not query.strip():
+            raise ValueError("query не может быть пустым")
+        rag_server_url = args.get("rag_server_url") or DEFAULT_RAG_URL
+        filters = {k: args[k] for k in ("project", "report_type", "type", "tags", "date_from", "date_to") if args.get(k)}
+        results = await self.rag_client.search(
+            query=query, top_k=args.get("top_k", 5), search_type="hybrid",
+            use_reranker=args.get("use_reranker", True), expand_query=False,
+            filters=filters or None, rag_server_url=rag_server_url,
+        )
+        return [TextContent(type="text", text=json.dumps(
+            {"query": query, "filters": filters, "results": results}, indent=2, ensure_ascii=False))]
 
     async def _handle_query_direct(self, args: Dict[str, Any]) -> List[TextContent]:
         """Обработка прямого SQL запроса"""

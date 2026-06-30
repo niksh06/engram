@@ -59,29 +59,22 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     echo "✅ All packages installed successfully!" \
     '
 
-# Pre-download and cache sentence-transformer models to avoid download on first run
-RUN echo "📦 Caching sentence-transformer models..." && \
-    bash -c '. .venv/bin/activate && python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer(\"sentence-transformers/paraphrase-multilingual-mpnet-base-v2\"); SentenceTransformer(\"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\")"'
-
-RUN echo "📦 Caching cross-encoder models..." && \
-    bash -c '. .venv/bin/activate && python -c "from sentence_transformers import CrossEncoder; CrossEncoder(\"cross-encoder/ms-marco-MiniLM-L-6-v2\")"'
-
-# Tree-sitter grammars will be downloaded on first use by the application.
-# This avoids pre-caching issues and ensures compatibility.
-RUN echo "📦 Tree-sitter grammars will be downloaded on first use..."
+# Models are NOT baked into the image (Engram option B): they live in the host
+# HuggingFace cache, bind-mounted at /hf-cache (shared with Aleph) — see docker-compose.yml.
+# This keeps the image lean and avoids re-downloading ~1.6 GB of models on every build.
+# Tree-sitter grammars download on first use.
+RUN echo "📦 Models load from bind-mounted /hf-cache at runtime (not baked)."
 
 # ---- Final Stage: Create the lean final image ----
 FROM base as final
 
 # Copy the virtual environment with all dependencies from the builder stage
 COPY --from=builder /app/.venv ./.venv
-# Copy the cache with pre-downloaded models and grammars
-COPY --from=builder /app/.cache /app/.cache
 
-# Activate venv for the final image by adding it to PATH and set ENV vars
+# Activate venv; models resolve from the bind-mounted host HF cache (/hf-cache), offline.
 ENV PATH="/app/.venv/bin:$PATH" \
-    SENTENCE_TRANSFORMERS_HOME=/app/.cache \
-    XDG_CACHE_HOME=/app/.cache
+    HF_HOME=/hf-cache \
+    HF_HUB_OFFLINE=1
 
 # Copy the application source code
 COPY app ./app

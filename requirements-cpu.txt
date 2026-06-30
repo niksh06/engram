@@ -3,6 +3,8 @@
 # using the CPU-specific index URL.
 sentence-transformers
 langchain
+langchain-text-splitters
+pyyaml
 llama-index-core
 tree-sitter-language-pack
 scikit-learn 

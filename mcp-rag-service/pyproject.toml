@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mcp-rag-service"
+name = "engram-mcp"
 version = "1.0.0"
-description = "MCP сервис для интеграции с Python RAG Server (DuckDB VSS)"
+description = "MCP service for Engram — local reports RAG+RLM (DuckDB VSS+FTS)"
 authors = [
     { name = "AI Assistant", email = "ai@example.com" }
 ]

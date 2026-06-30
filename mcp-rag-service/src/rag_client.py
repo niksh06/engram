@@ -90,6 +90,7 @@ class RAGClient:
         search_type: str = "hybrid",
         use_reranker: bool = True,
         expand_query: bool = False,
+        filters: Optional[Dict[str, Any]] = None,
         rag_server_url: str = "http://host.docker.internal:8000",
     ) -> List[Dict[str, Any]]:
         """
@@ -119,6 +120,10 @@ class RAGClient:
                 "use_reranker": str(use_reranker).lower(),
                 "expand_query": str(expand_query).lower(),
             }
+            for _k in ("project", "report_type", "type", "tags", "date_from", "date_to"):
+                if filters and filters.get(_k):
+                    _v = filters[_k]
+                    params[_k] = ",".join(_v) if isinstance(_v, list) else _v
             
             async with session.post(search_url, params=params) as response:
                 if response.status != 200:
@@ -138,6 +143,51 @@ class RAGClient:
             logger.error(f"Ошибка поиска: {e}")
             raise
     
+    async def ingest_report(
+        self,
+        path: str,
+        project: Optional[str] = None,
+        report_type: Optional[str] = None,
+        report_date: Optional[str] = None,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[Any] = None,
+        doc_type: Optional[str] = None,
+        rag_server_url: str = "http://host.docker.internal:8000",
+    ) -> Dict[str, Any]:
+        """Ingest a report file (server-accessible path) as an OKF doc via /api/ingest-report."""
+        session = await self._get_session()
+        url = f"{rag_server_url.rstrip('/')}/api/ingest-report"
+        params = {"path": path}
+        if isinstance(tags, list):
+            tags = ",".join(tags)
+        for _k, _v in (("project", project), ("report_type", report_type),
+                       ("report_date", report_date), ("title", title),
+                       ("description", description), ("tags", tags), ("type", doc_type)):
+            if _v:
+                params[_k] = _v
+        async with session.post(url, params=params) as response:
+            result = await response.json()
+            if response.status != 200:
+                raise Exception(f"ingest-report failed: HTTP {response.status}, {result}")
+            logger.info(f"Ingested report {path} (project={project})")
+            return result
+
+    async def delete_report(
+        self,
+        source_path: str,
+        rag_server_url: str = "http://host.docker.internal:8000",
+    ) -> Dict[str, Any]:
+        """Delete all chunks for a report by its source_path via /api/delete-report."""
+        session = await self._get_session()
+        url = f"{rag_server_url.rstrip('/')}/api/delete-report"
+        async with session.delete(url, params={"source_path": source_path}) as response:
+            result = await response.json()
+            if response.status != 200:
+                raise Exception(f"delete-report failed: HTTP {response.status}, {result}")
+            logger.info(f"Deleted report {source_path} ({result.get('deleted_chunks')} chunks)")
+            return result
+
     async def close(self):
         """Закрыть HTTP сессию"""
         if self.session:
