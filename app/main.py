@@ -379,6 +379,27 @@ async def api_reports():
         return {"error": str(e), "reports": []}
 
 
+@app.post("/api/ask")
+async def api_ask(
+    question: str,
+    project: Optional[str] = Query(None),
+    report_type: Optional[str] = Query(None),
+    tags: Optional[str] = Query(None),
+    max_hops: int = Query(1, ge=0, le=3),
+    top_k: int = Query(6, ge=1, le=20),
+):
+    """RLM-lite: recursive multi-hop Q&A over the reports corpus (cited, grounded answer)."""
+    if not question or not question.strip():
+        return {"error": "question cannot be empty"}
+    try:
+        filters = {k: v for k, v in {"project": project, "report_type": report_type, "tags": tags}.items() if v}
+        return services.rlm_ask(question, filters=filters or None, max_hops=max_hops, top_k=top_k)
+    except Exception as e:
+        logger.error(f"ask failed: {e}", exc_info=True)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.get("/reports", response_class=HTMLResponse)
 async def reports_browser(
     request: Request,

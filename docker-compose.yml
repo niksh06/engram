@@ -16,6 +16,11 @@ services:
       HF_HUB_OFFLINE: "1"            # models served from the mounted cache, no egress
       CHUNK_SIZE: "700"
       CHUNK_OVERLAP: "100"
+      # RLM-lite: local LLM for multi-hop Q&A (sovereign, loopback to the host server)
+      RLM_BASE_URL: "http://host.docker.internal:8890/v1"
+      RLM_MODEL: "/Users/nsh/local-llm/models/VulnLLM-R-7B.i1-Q4_K_M.gguf"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"        # reach the host's local LLM on :8890
     volumes:
       - ${HOME}/.cache/huggingface:/hf-cache      # shared model store (mpnet/reranker), option B
       - engram_data:/app/data                      # .duckdb persistence
