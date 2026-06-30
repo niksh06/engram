@@ -419,16 +419,31 @@ async def reports_browser(
         reports = [r for r in reports if r["report_type"] == report_type]
     if tag:
         reports = [r for r in reports if tag in (r["tags"] or [])]
-    if q:
-        ql = q.lower()
-        reports = [r for r in reports
-                   if ql in (r.get("title") or "").lower()
-                   or ql in (r.get("description") or "").lower()]
-    grouped = {}
-    for r in reports:
-        grouped.setdefault(r["project"] or "—", {}).setdefault(r["report_type"] or "—", []).append(r)
+    flat = None
+    if q and q.strip():
+        # Semantic: rank reports by hybrid (VSS+FTS+rerank) relevance; facets baked into the filter.
+        sfilters = {k: v for k, v in {"project": project, "report_type": report_type, "tags": tag}.items() if v}
+        try:
+            hits = services.search_chunks(q, top_k=40, search_type="hybrid", use_reranker=True,
+                                          filters=sfilters or None)
+        except Exception as e:
+            logger.warning(f"reports semantic search failed: {e}")
+            hits = []
+        by_sp = {r["source_path"]: r for r in reports}
+        flat, seen = [], set()
+        for h in hits:
+            sp = (h.get("metadata") or {}).get("source_path")
+            if sp and sp not in seen and sp in by_sp:
+                seen.add(sp)
+                flat.append({**by_sp[sp], "snippet": (h.get("content") or "").strip()[:220]})
+        grouped, total = None, len(flat)
+    else:
+        grouped = {}
+        for r in reports:
+            grouped.setdefault(r["project"] or "—", {}).setdefault(r["report_type"] or "—", []).append(r)
+        total = len(reports)
     return templates.TemplateResponse(request, "reports.html", {
-        "grouped": grouped, "total": len(reports),
+        "grouped": grouped, "flat": flat, "total": total,
         "projects": projects, "types": types, "all_tags": all_tags,
         "f": {"project": project or "", "report_type": report_type or "", "tag": tag or "", "q": q or ""},
     })
