@@ -111,7 +111,7 @@ def _render(meta, body):
         fm = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False).strip()
     else:  # degraded, still valid-ish YAML
         fm = "\n".join(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in meta.items())
-    return f"---\n{fm}\n---\n\n{body.lstrip()}\n"
+    return f"---\n{fm}\n---\n\n{body.strip()}\n"
 
 
 def stamp(path, force=False, **meta_kw):
