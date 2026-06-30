@@ -188,6 +188,27 @@ class RAGClient:
             logger.info(f"Deleted report {source_path} ({result.get('deleted_chunks')} chunks)")
             return result
 
+    async def ask(
+        self,
+        question: str,
+        filters: Optional[Dict[str, Any]] = None,
+        max_hops: int = 1,
+        top_k: int = 6,
+        rag_server_url: str = "http://host.docker.internal:8000",
+    ) -> Dict[str, Any]:
+        """RLM-lite multi-hop Q&A over reports via /api/ask. Returns cited answer + sources."""
+        session = await self._get_session()
+        url = f"{rag_server_url.rstrip('/')}/api/ask"
+        params = {"question": question, "max_hops": max_hops, "top_k": top_k}
+        for _k in ("project", "report_type", "tags"):
+            if filters and filters.get(_k):
+                params[_k] = filters[_k]
+        async with session.post(url, params=params) as response:
+            result = await response.json()
+            if response.status != 200:
+                raise Exception(f"ask failed: HTTP {response.status}, {result}")
+            return result
+
     async def close(self):
         """Закрыть HTTP сессию"""
         if self.session:

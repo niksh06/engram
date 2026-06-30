@@ -802,6 +802,121 @@ def list_reports() -> List[Dict[str, Any]]:
         out.append(d)
     return out
 
+
+# --- RLM-lite: recursive multi-hop Q&A over the reports corpus (local LLM) ---
+RLM_BASE_URL = os.environ.get("RLM_BASE_URL", "http://host.docker.internal:8890/v1")
+RLM_MODEL = os.environ.get("RLM_MODEL", "local")
+
+import re as _re_mod
+_THINK_RE = _re_mod.compile(r"<think>.*?</think>", _re_mod.DOTALL | _re_mod.IGNORECASE)
+
+
+def _llm_chat(messages, max_tokens=900, temperature=0.2, timeout=240) -> str:
+    """Call the configured OpenAI-compatible local LLM (chat/completions). Strips <think>."""
+    import urllib.request
+    payload = json.dumps({"model": RLM_MODEL, "messages": messages, "stream": False,
+                          "max_tokens": max_tokens, "temperature": temperature}).encode()
+    req = urllib.request.Request(RLM_BASE_URL.rstrip("/") + "/chat/completions",
+                                 data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode())
+    content = data["choices"][0]["message"]["content"]
+    return _THINK_RE.sub("", content).strip()
+
+
+def _build_ctx_sources(chunks):
+    """Number unique sources (by source_path); return (numbered context string, sources list)."""
+    order, by_sp = [], {}
+    for c in chunks:
+        sp = (c.get("metadata") or {}).get("source_path")
+        if sp not in by_sp:
+            m = c.get("metadata") or {}
+            by_sp[sp] = {"n": len(order) + 1, "source_path": sp, "title": m.get("title"),
+                         "project": m.get("project"), "report_type": m.get("report_type"), "ex": []}
+            order.append(sp)
+        by_sp[sp]["ex"].append(c.get("content", ""))
+    ctx = "\n\n".join(
+        f"[{by_sp[sp]['n']}] {by_sp[sp]['title']} ({by_sp[sp]['project']}/{by_sp[sp]['report_type']}):\n"
+        + " … ".join(by_sp[sp]["ex"][:3])[:1400]
+        for sp in order)
+    sources = [{"n": by_sp[sp]["n"], "source_path": sp, "title": by_sp[sp]["title"],
+                "project": by_sp[sp]["project"], "report_type": by_sp[sp]["report_type"]} for sp in order]
+    return ctx, sources
+
+
+def _parse_followup(text):
+    """Extract a follow-up query from the planner's reply; None means 'enough'."""
+    import re as _re
+    m = _re.search(r"\{.*\}", text, _re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+            if obj.get("enough") is True:
+                return None
+            fu = obj.get("followup")
+            return fu.strip() if isinstance(fu, str) and fu.strip() and fu.strip().lower() != "null" else None
+        except Exception:
+            pass
+    return None  # unparseable -> stop looping (safe)
+
+
+_RLM_PLAN_SYS = ("Ты планировщик поиска по корпусу отчётов. По вопросу и уже найденному контексту "
+                 "реши, достаточно ли данных для полного ответа. Если нет — предложи ОДИН короткий "
+                 "уточняющий поисковый запрос. Отвечай ТОЛЬКО JSON: "
+                 '{"enough": true|false, "followup": "<запрос или null>"}.')
+_RLM_ANSWER_SYS = ("Ты аналитик. Отвечай по-русски, кратко и по делу, опираясь ТОЛЬКО на приведённые "
+                   "источники. Ссылайся на источники в тексте как [n]. Если данных не хватает — скажи прямо, "
+                   "не выдумывай.")
+
+
+def rlm_ask(question: str, filters: Dict[str, Any] = None, max_hops: int = 1, top_k: int = 6) -> Dict[str, Any]:
+    """Recursive multi-hop Q&A: retrieve -> (plan->retrieve)*max_hops -> cited synthesis.
+    Degrades to plain retrieval if the local LLM is unreachable."""
+    if model is None or db_connection is None:
+        initialize_services()
+    gathered, subqueries = {}, []
+
+    def _add(results):
+        for r in results:
+            key = ((r.get("metadata") or {}).get("source_path"), r.get("content", "")[:80])
+            gathered[key] = r
+
+    subqueries.append(question)
+    _add(search_chunks(question, top_k=top_k, search_type="hybrid", use_reranker=True, filters=filters))
+
+    llm_ok, hops = True, 0
+    while hops < max(0, max_hops):
+        ctx, _ = _build_ctx_sources(list(gathered.values()))
+        try:
+            decision = _llm_chat([{"role": "system", "content": _RLM_PLAN_SYS},
+                                  {"role": "user", "content": f"Вопрос: {question}\n\nКонтекст:\n{ctx}"}],
+                                 max_tokens=200)
+        except Exception as e:
+            logger.warning(f"RLM planner LLM failed: {e}")
+            llm_ok = False
+            break
+        fu = _parse_followup(decision)
+        if not fu:
+            break
+        subqueries.append(fu)
+        _add(search_chunks(fu, top_k=top_k, search_type="hybrid", use_reranker=True, filters=filters))
+        hops += 1
+
+    chunks = list(gathered.values())
+    ctx, sources = _build_ctx_sources(chunks)
+    answer, error = None, None
+    try:
+        answer = _llm_chat([{"role": "system", "content": _RLM_ANSWER_SYS},
+                            {"role": "user", "content": f"Вопрос: {question}\n\nИсточники:\n{ctx}"}],
+                           max_tokens=900)
+    except Exception as e:
+        error = f"LLM unreachable ({e}); returning retrieved sources only (RAG fallback)."
+        logger.warning(f"RLM synth LLM failed: {e}")
+        llm_ok = False
+
+    return {"question": question, "answer": answer, "error": error, "llm_ok": llm_ok,
+            "subqueries": subqueries, "hops": hops, "chunks_used": len(chunks), "sources": sources}
+
 # --- Main Processing Logic ---
 def process_and_embed_files(use_tfidf_keywords: bool = True, top_n_keywords: int = 5) -> List[Dict[str, Any]]:
     """
