@@ -26,6 +26,8 @@
   .card .m { color:var(--mut); font-size:12px; margin-top:3px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
   .card .d { color:#c7cdda; font-size:13.5px; margin-top:6px; }
   .chip { background:var(--chip); border:1px solid var(--line); border-radius:20px; padding:1px 9px; font-size:11px; color:#aeb6c9; }
+  .snip { color:#9aa3b6; font-size:12.5px; margin-top:7px; border-left:2px solid var(--line); padding-left:8px; }
+  .px { color:#7e8aa0; }
   .empty { color:var(--mut); padding:40px 0; text-align:center; }
 </style>
 </head>
@@ -48,32 +50,39 @@
       <option value="">все теги</option>
       {% for tg in all_tags %}<option value="{{ tg }}" {% if f.tag==tg %}selected{% endif %}>{{ tg }}</option>{% endfor %}
     </select>
-    <input type="text" name="q" value="{{ f.q }}" placeholder="фильтр по заголовку/описанию…">
+    <input type="text" name="q" value="{{ f.q }}" placeholder="семантический поиск по смыслу…">
     <button type="submit">Фильтр</button>
     <a class="reset" href="/reports">сброс</a>
   </form>
 
-  {% if total == 0 %}
-    <div class="empty">Ничего не найдено по фильтрам.</div>
-  {% endif %}
+  {% macro card(r, snippet=None) %}
+    <div class="card">
+      <div class="t"><a href="/reports/view?source_path={{ r.source_path | urlencode }}">{{ r.title or r.file_name }}</a></div>
+      <div class="m">
+        <span class="px">{{ r.project }}/{{ r.report_type }}</span>
+        {% if r.report_date %}<span>{{ r.report_date }}</span>{% endif %}
+        <span>{{ r.chunks }} чанк.</span>
+        {% for tg in (r.tags or [])[:6] %}<span class="chip">{{ tg }}</span>{% endfor %}
+      </div>
+      {% if r.description %}<div class="d">{{ r.description }}</div>{% endif %}
+      {% if snippet %}<div class="snip">…{{ snippet }}…</div>{% endif %}
+    </div>
+  {% endmacro %}
 
-  {% for proj, types_map in grouped.items() %}
-    <div class="proj">{{ proj }}</div>
-    {% for rtype, items in types_map.items() %}
-      <div class="rtype">{{ rtype }} · {{ items|length }}</div>
-      {% for r in items %}
-        <div class="card">
-          <div class="t"><a href="/reports/view?source_path={{ r.source_path | urlencode }}">{{ r.title or r.file_name }}</a></div>
-          <div class="m">
-            {% if r.report_date %}<span>{{ r.report_date }}</span>{% endif %}
-            <span>{{ r.chunks }} чанков</span>
-            {% for tg in (r.tags or [])[:6] %}<span class="chip">{{ tg }}</span>{% endfor %}
-          </div>
-          {% if r.description %}<div class="d">{{ r.description }}</div>{% endif %}
-        </div>
+  {% if flat is not none %}
+    {% if total == 0 %}<div class="empty">Ничего не найдено по запросу.</div>{% endif %}
+    {% if total %}<div class="rtype">по релевантности (semantic) · {{ total }}</div>{% endif %}
+    {% for r in flat %}{{ card(r, r.snippet) }}{% endfor %}
+  {% else %}
+    {% if total == 0 %}<div class="empty">Ничего не найдено по фильтрам.</div>{% endif %}
+    {% for proj, types_map in grouped.items() %}
+      <div class="proj">{{ proj }}</div>
+      {% for rtype, items in types_map.items() %}
+        <div class="rtype">{{ rtype }} · {{ items|length }}</div>
+        {% for r in items %}{{ card(r) }}{% endfor %}
       {% endfor %}
     {% endfor %}
-  {% endfor %}
+  {% endif %}
 </div>
 </body>
 </html>
