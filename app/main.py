@@ -48,7 +48,7 @@ async def read_root(request: Request):
     """Serves the main page."""
     uploaded_files = services.get_uploaded_files()
     total_chunks = services.get_total_chunks_count()
-    return templates.TemplateResponse("index.html", {
+    return templates.TemplateResponse(request, "index.html", {
         "request": request,
         "uploaded_files": uploaded_files,
         "processed_chunks": None,
@@ -87,7 +87,7 @@ async def upload_files(request: Request, files: List[UploadFile] = File(...)):
     
     uploaded_files = services.get_uploaded_files()
     total_chunks = services.get_total_chunks_count()
-    return templates.TemplateResponse("index.html", {
+    return templates.TemplateResponse(request, "index.html", {
         "request": request,
         "uploaded_files": uploaded_files,
         "processed_chunks": None,
@@ -123,7 +123,7 @@ async def upload_directory(request: Request):
             logger.error("No files received in upload_directory request")
             uploaded_files = services.get_uploaded_files()
             total_chunks = services.get_total_chunks_count()
-            return templates.TemplateResponse("index.html", {
+            return templates.TemplateResponse(request, "index.html", {
                 "request": request,
                 "uploaded_files": uploaded_files,
                 "total_chunks": total_chunks,
@@ -211,7 +211,7 @@ async def upload_directory(request: Request):
         
         uploaded_files = services.get_uploaded_files()
         total_chunks = services.get_total_chunks_count()
-        return templates.TemplateResponse("index.html", {
+        return templates.TemplateResponse(request, "index.html", {
             "request": request,
             "uploaded_files": uploaded_files,
             "processed_chunks": None,
@@ -222,7 +222,7 @@ async def upload_directory(request: Request):
         logger.error(f"Error in upload_directory: {e}", exc_info=True)
         uploaded_files = services.get_uploaded_files()
         total_chunks = services.get_total_chunks_count()
-        return templates.TemplateResponse("index.html", {
+        return templates.TemplateResponse(request, "index.html", {
             "request": request,
             "uploaded_files": uploaded_files,
             "total_chunks": total_chunks,
@@ -243,7 +243,7 @@ async def process_files(request: Request, use_tfidf: bool = Form(True)):
     uploaded_files = services.get_uploaded_files()
     total_chunks = services.get_total_chunks_count()
 
-    return templates.TemplateResponse("index.html", {
+    return templates.TemplateResponse(request, "index.html", {
         "request": request,
         "uploaded_files": uploaded_files,
         "processed_chunks": processed_chunks_json_str,
@@ -268,7 +268,7 @@ async def search(
     uploaded_files = services.get_uploaded_files()
     total_chunks = services.get_total_chunks_count()
 
-    return templates.TemplateResponse("index.html", {
+    return templates.TemplateResponse(request, "index.html", {
         "request": request,
         "uploaded_files": uploaded_files,
         "processed_chunks": None,
@@ -489,7 +489,7 @@ async def delete_file(request: Request, filename: str = Form(...)):
             # Возвращаем обновленный список файлов
             uploaded_files = services.get_uploaded_files()
             total_chunks = services.get_total_chunks_count()
-            return templates.TemplateResponse("index.html", {
+            return templates.TemplateResponse(request, "index.html", {
                 "request": request,
                 "uploaded_files": uploaded_files,
                 "processed_chunks": None,
@@ -499,7 +499,7 @@ async def delete_file(request: Request, filename: str = Form(...)):
         else:
             uploaded_files = services.get_uploaded_files()
             total_chunks = services.get_total_chunks_count()
-            return templates.TemplateResponse("index.html", {
+            return templates.TemplateResponse(request, "index.html", {
                 "request": request,
                 "uploaded_files": uploaded_files,
                 "processed_chunks": None,
@@ -509,7 +509,7 @@ async def delete_file(request: Request, filename: str = Form(...)):
     except Exception as e:
         uploaded_files = services.get_uploaded_files()
         total_chunks = services.get_total_chunks_count()
-        return templates.TemplateResponse("index.html", {
+        return templates.TemplateResponse(request, "index.html", {
             "request": request,
             "uploaded_files": uploaded_files,
             "processed_chunks": None,
