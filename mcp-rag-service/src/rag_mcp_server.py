@@ -250,6 +250,23 @@ class RAGMCPServer:
                     }
                 ),
                 Tool(
+                    name="ask_reports",
+                    description="Ask a question over the Engram reports corpus. RLM-lite: recursive multi-hop retrieval + a grounded, cited answer synthesized by a local LLM (sovereign, no cloud). Optional filters narrow the corpus.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "question": {"type": "string", "description": "Natural-language question over the reports"},
+                            "project": {"type": "string", "description": "Filter by project (optional)"},
+                            "report_type": {"type": "string", "description": "Filter by report type (optional)"},
+                            "tags": {"type": "string", "description": "Comma-separated tags, any-of (optional)"},
+                            "max_hops": {"type": "integer", "default": 1, "minimum": 0, "maximum": 3, "description": "Recursive retrieve-reason hops"},
+                            "top_k": {"type": "integer", "default": 6, "minimum": 1, "maximum": 20},
+                            "rag_server_url": {"type": "string", "default": "http://host.docker.internal:8000"}
+                        },
+                        "required": ["question"]
+                    }
+                ),
+                Tool(
                     name="search_reports",
                     description="Search Engram reports with OKF metadata filters (project / report_type / type / tags / date range). Hybrid vector+keyword with reranking.",
                     inputSchema={
@@ -315,6 +332,8 @@ class RAGMCPServer:
                     return await self._handle_delete_report(arguments)
                 elif name == "search_reports":
                     return await self._handle_search_reports(arguments)
+                elif name == "ask_reports":
+                    return await self._handle_ask_reports(arguments)
                 elif name == "rag_query_direct":
                     return await self._handle_query_direct(arguments)
                 else:
@@ -546,6 +565,19 @@ class RAGMCPServer:
         )
         return [TextContent(type="text", text=json.dumps(
             {"query": query, "filters": filters, "results": results}, indent=2, ensure_ascii=False))]
+
+    async def _handle_ask_reports(self, args: Dict[str, Any]) -> List[TextContent]:
+        """RLM-lite multi-hop Q&A over the reports corpus."""
+        question = args.get("question")
+        if not question or not question.strip():
+            raise ValueError("question не может быть пустым")
+        rag_server_url = args.get("rag_server_url") or DEFAULT_RAG_URL
+        filters = {k: args[k] for k in ("project", "report_type", "tags") if args.get(k)}
+        result = await self.rag_client.ask(
+            question=question, filters=filters or None,
+            max_hops=args.get("max_hops", 1), top_k=args.get("top_k", 6),
+            rag_server_url=rag_server_url)
+        return [TextContent(type="text", text=json.dumps(result, indent=2, ensure_ascii=False))]
 
     async def _handle_query_direct(self, args: Dict[str, Any]) -> List[TextContent]:
         """Обработка прямого SQL запроса"""
