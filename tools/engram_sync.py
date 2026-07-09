@@ -13,7 +13,11 @@ For a *hub-native* file (global/, handoffs/, directly-authored project files) it
 ingested as-is. Ingest is upsert-by-source_path, so re-runs never duplicate chunks.
 
 Config: engram-sync.json next to this script (override via $ENGRAM_SYNC_CONFIG).
-Limitation: deletions are not propagated to the index (v1).
+Deletions propagate on BOTH paths: live watchdog events (delete/move) and the
+`scan` reconcile — files that vanished while the daemon was not watching are
+removed from state and index on the next scan. Guard: a source root (or the
+hub) that is currently unavailable is skipped entirely — its files merely
+LOOK deleted, and reconcile must never mass-delete an unmounted corpus.
 """
 import os, sys, re, json, time, datetime, urllib.parse, urllib.request, threading
 from pathlib import Path
@@ -234,6 +238,7 @@ def delete_path(cfg, path):
 def scan(cfg):
     state = load_state()
     synced_hub, changed = set(), 0
+    seen = set()  # every state-keyed path observed this run (reconcile basis)
     # origins first (write hub copies + ingest)
     for src in cfg["sources"]:
         base = Path(src["path"])
@@ -246,6 +251,7 @@ def scan(cfg):
                 continue
             hub_target, rtype = mapped
             synced_hub.add(str(hub_target.resolve()))
+            seen.add(fp)
             try:
                 mt = os.path.getmtime(fp)
             except OSError:
@@ -265,6 +271,7 @@ def scan(cfg):
     # hub-native files not mirrored from an origin
     for f in Path(cfg["hub"]).rglob("*.md"):
         fp = str(f.resolve())
+        seen.add(fp)
         if fp in synced_hub or f.name.lower() in RESERVED:
             continue
         try:
@@ -283,8 +290,38 @@ def scan(cfg):
             log(f"scan hub {f.name} (chunks={res.get('chunks_added')})")
         except Exception as ex:
             log(f"ERROR hub {fp}: {ex}")
+    # reconcile deletions: files that vanished while the daemon was not
+    # watching (sleep, crash window, other machine) used to stay in the
+    # index forever — state only ever grew. Guard: never reconcile-delete
+    # under a root that is unavailable right now; every file there merely
+    # LOOKS deleted (unmounted disk would otherwise mass-delete a corpus).
+    removed = 0
+    hub = cfg["hub"]
+    hub_available = Path(hub).is_dir()
+    source_roots = {src["path"]: Path(src["path"]).is_dir() for src in cfg["sources"]}
+    for fp in list(state):
+        if fp in seen or os.path.exists(fp):
+            continue
+        root = next((r for r in source_roots
+                     if fp == r or fp.startswith(r + os.sep)), None)
+        if root is not None:
+            if not source_roots[root]:
+                continue  # root unavailable: skip, do not touch
+        elif fp == hub or fp.startswith(hub + os.sep):
+            if not hub_available:
+                continue
+        else:
+            state.pop(fp)  # belongs to no configured root: drop state only
+            continue
+        try:
+            delete_path(cfg, fp)
+            state.pop(fp)
+            removed += 1
+            log(f"scan reconcile-delete {Path(fp).name}")
+        except Exception as ex:
+            log(f"ERROR reconcile-delete {fp}: {ex}")
     save_state(state)
-    log(f"scan done: {changed} changed")
+    log(f"scan done: {changed} changed, {removed} reconciled deletions")
     return changed
 
 
