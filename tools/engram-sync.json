@@ -2,7 +2,17 @@
   "rag_url": "http://127.0.0.1:8089",
   "hub": "~/Reports",
   "sources": [
-    {"path": "~/Downloads/TParser/Reports", "project": "tparser"},
-    {"path": "~/Downloads/Aleph/Reports", "project": "aleph"}
+    {
+      "path": "~/Downloads/TParser/Reports",
+      "project": "tparser"
+    },
+    {
+      "path": "~/Downloads/Aleph/Reports",
+      "project": "aleph"
+    },
+    {
+      "path": "~/Downloads/ouroboros/projects/field-journal",
+      "project": "vesper"
+    }
   ]
 }
